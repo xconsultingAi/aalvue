@@ -1,0 +1,193 @@
+/* Shared Styles 
+ * Extracts common styles to eliminate DRY violations (dialog styles, form styles, design tokens)
+ */
+
+/* ==================== CSS VARIABLES (for backward compatibility) ==================== */
+:root {
+  --color-primary: rgb(0, 158, 247);
+  --color-primary-hover: rgb(0, 140, 220);
+  --color-primary-alt: #4a90e2;
+  --color-primary-alt-hover: #357abd;
+  --color-text: rgb(33, 37, 41);
+  --color-text-muted: rgba(94, 98, 120, 0.7);
+  --color-error: #ef4444;
+  --color-error-bg: #fef2f2;
+  --color-success: #10b981;
+  --color-border: #e0e0e0;
+  --color-border-light: rgba(0, 0, 0, 0.04);
+  --color-bg-overlay: rgba(0, 0, 0, 0.6);
+  --color-bg-hover: #f0f0f0;
+  
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 16px;
+  
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 20px;
+  --spacing-2xl: 24px;
+  --spacing-3xl: 32px;
+  --spacing-4xl: 40px;
+  
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.02);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.3);
+  
+  --z-index-dialog: 1000;
+  --z-index-overlay: 10000;
+  
+  /* ==================== CELL FORMATTING COLORS ==================== */
+  /* Cell Indicator Triangle Colors */
+  --cell-indicator-final: #10b981;                    /* Green - final indicator triangle */
+  --cell-indicator-final-shadow: rgba(16, 185, 129, 0.3);
+  --cell-indicator-source: #6b7280;                   /* Grey - source indicator triangle */
+  --cell-indicator-source-shadow: rgba(107, 114, 128, 0.3);
+  --cell-indicator-correction: #3b82f6;               /* Blue - manual correction indicator triangle */
+  --cell-indicator-correction-shadow: rgba(59, 130, 246, 0.3);
+  --cell-indicator-sample-code: #6b7280;              /* Grey - sample code indicator triangle */
+  --cell-indicator-sample-code-shadow: rgba(107, 114, 128, 0.3);
+  
+  /* Conditional Formatting Colors (CRM Rows - Analyte Limits) */
+  --cell-limit-out-of-range: #ef4444;                 /* Red - below/above limit border */
+  --cell-limit-out-of-range-bg: rgba(239, 68, 68, 0.15); /* Light red background - out of range */
+  --cell-limit-within-range: #10b981;                 /* Green - within range border */
+  --cell-limit-within-range-bg: rgba(16, 185, 129, 0.1); /* Light green background - within range */
+  
+  /* Variance Formatting Colors - ORIGINAL/REJCTDUP/PULPDUP (Red) */
+  --cell-variance-dup-high: #991b1b;                      /* Very dark red - variance > threshold */
+  --cell-variance-dup-high-bg: rgba(153, 27, 27, 0.3);     /* Very dark red background - variance > threshold */
+  --cell-variance-dup-medium: #ef4444;                    /* Light red - variance > medium threshold and ≤ high threshold */
+  --cell-variance-dup-medium-bg: rgba(239, 68, 68, 0.15);  /* Light red background - variance > medium threshold and ≤ high threshold */
+  
+  /* Variance Formatting Colors - ORGPRD/PRD (Orange/Amber) */
+  --cell-variance-prd-high: #9a3412;                      /* Very dark orange - variance > threshold */
+  --cell-variance-prd-high-bg: rgba(154, 52, 18, 0.3);    /* Very dark orange background - variance > threshold */
+  --cell-variance-prd-medium: #f97316;                     /* Light orange - variance > medium threshold and ≤ high threshold */
+  --cell-variance-prd-medium-bg: rgba(249, 115, 22, 0.15); /* Light orange background - variance > medium threshold and ≤ high threshold */
+  
+  /* Variance Formatting Colors - ORGCRD/CRD (Blue/Indigo) */
+  --cell-variance-crd-high: #1e40af;                       /* Very dark blue - variance > threshold */
+  --cell-variance-crd-high-bg: rgba(30, 64, 175, 0.3);    /* Very dark blue background - variance > threshold */
+  --cell-variance-crd-medium: #3b82f6;                      /* Light blue - variance > medium threshold and ≤ high threshold */
+  --cell-variance-crd-medium-bg: rgba(59, 130, 246, 0.15); /* Light blue background - variance > medium threshold and ≤ high threshold */
+}
+
+
+/* ==================== TOAST NOTIFICATION STYLES ==================== */
+/**
+ * Tailwind-compatible styles for vue-toastification library
+ * Modern white background design with colored icons (matching Tailwind notification pattern)
+ * All toast types use white background with subtle shadow
+ */
+.Vue-Toastification__container {
+  z-index: 10001 !important; /* Above overlay (10000) */
+}
+
+/* Base toast styling - white background for all types */
+.Vue-Toastification__toast {
+  min-width: 300px !important;
+  max-width: 500px !important;
+  width: auto !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  padding: 12px 16px !important; /* Tailwind: px-3 py-4 */
+  border-radius: 8px !important; /* Tailwind: rounded-lg */
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important; /* Tailwind: shadow-md */
+  font-size: 14px !important; /* Tailwind: text-sm */
+  line-height: 1.5 !important;
+  word-wrap: break-word !important;
+  white-space: normal !important;
+  background-color: #ffffff !important; /* Tailwind: bg-white */
+  color: #1f2937 !important; /* Tailwind: text-gray-800 */
+  border: 1px solid #e5e7eb !important; /* Tailwind: border-gray-200 */
+}
+
+/* Override colored backgrounds - all toasts use white background with colored left border */
+.Vue-Toastification__toast--success {
+  background-color: #ffffff !important; /* Tailwind: bg-white */
+  color: #1f2937 !important; /* Tailwind: text-gray-800 */
+  border: 1px solid #e5e7eb !important; /* Tailwind: border-gray-200 */
+  border-left: 4px solid #10b981 !important; /* Tailwind: border-l-4 border-green-500 */
+}
+
+.Vue-Toastification__toast--error {
+  background-color: #ffffff !important; /* Tailwind: bg-white */
+  color: #1f2937 !important; /* Tailwind: text-gray-800 */
+  border: 1px solid #e5e7eb !important; /* Tailwind: border-gray-200 */
+  border-left: 4px solid #ef4444 !important; /* Tailwind: border-l-4 border-red-500 */
+}
+
+.Vue-Toastification__toast--warning {
+  background-color: #ffffff !important; /* Tailwind: bg-white */
+  color: #1f2937 !important; /* Tailwind: text-gray-800 */
+  border: 1px solid #e5e7eb !important; /* Tailwind: border-gray-200 */
+  border-left: 4px solid #f59e0b !important; /* Tailwind: border-l-4 border-amber-500 */
+}
+
+.Vue-Toastification__toast--info {
+  background-color: #ffffff !important; /* Tailwind: bg-white */
+  color: #1f2937 !important; /* Tailwind: text-gray-800 */
+  border: 1px solid #e5e7eb !important; /* Tailwind: border-gray-200 */
+  border-left: 4px solid #3b82f6 !important; /* Tailwind: border-l-4 border-blue-500 */
+}
+
+.Vue-Toastification__toast-body {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  text-align: left !important;
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+}
+
+.Vue-Toastification__toast-body > div {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  width: 100% !important;
+  gap: 8px !important; /* Tailwind: gap-2 */
+}
+
+.Vue-Toastification__toast-body .Vue-Toastification__toast-icon {
+  flex-shrink: 0 !important;
+  margin-right: 8px !important; /* Tailwind: mr-2 */
+}
+
+.Vue-Toastification__toast-body .Vue-Toastification__toast-text {
+  flex: 1 !important;
+  display: block !important;
+  text-align: left !important;
+  writing-mode: horizontal-tb !important;
+  -webkit-writing-mode: horizontal-tb !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+}
+
+/* Close button styling - Tailwind gray color */
+.Vue-Toastification__toast .Vue-Toastification__close-button {
+  color: #6b7280 !important; /* Tailwind: text-gray-500 */
+  opacity: 1 !important;
+}
+
+.Vue-Toastification__toast .Vue-Toastification__close-button:hover {
+  color: #374151 !important; /* Tailwind: text-gray-700 */
+}
+
+/* ==================== TABULATOR CONTEXT MENU STYLES ==================== */
+/* Global styles for Tabulator context menu (appended to body) */
+.tabulator-menu {
+  background: white !important;
+  border: 1px solid rgba(0, 158, 247, 0.1) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  padding: 4px;
+  min-width: 200px;
+  overflow: hidden !important;
+}
