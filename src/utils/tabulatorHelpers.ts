@@ -1,6 +1,3 @@
-// Tabulator Helper Utilities
-// Extracts common patterns for extracting cells/rows from Tabulator ranges
-
 import type { Tabulator } from 'tabulator-tables'
 import type { ColumnDefinition } from '@/types'
 import { STATIC_COLUMN_COUNT } from '@/types'
@@ -11,33 +8,14 @@ export interface ExtractedCell {
 }
 
 export interface ExtractCellsOptions {
-  // Filter function to determine which columns to include (default: all dynamic columns)
   columnFilter?: (colDef: ColumnDefinition | undefined) => boolean
-  
-  // If true, extract only row indices (for row-based operations); if false, extract cell pairs
   extractRowsOnly?: boolean
-  
-  // Fallback cell/row to use if no selection exists
   fallbackCell?: { rowIndex: number; columnIndex: number }
-  
-  // Tabulator data for fallback method matching
   tabulatorData?: any[]
-  
-  // Column map for filtering
   columnMap?: Map<number, ColumnDefinition>
 }
 
-/**
- * Extract cells or rows from Tabulator range selections
- * 
- * REASONING: Consolidates the repeated pattern found in:
- * - handleCopyToResultCell (lines 1561-1685)
- * - handleMarkFinalCell (lines 1853-1906)
- * - handleClearResultsCell (lines 1982-2035)
- * - extractSelectedResultRows (lines 1147-1210)
- * 
- * This eliminates ~200+ lines of duplicated code.
- */
+// Extract cells or rows from Tabulator range selections
 export function extractCellsFromRanges(
   tabulatorInstance: Tabulator | null,
   selectedRanges: any[],
@@ -55,7 +33,6 @@ export function extractCellsFromRanges(
     return fallbackCell ? [fallbackCell] : []
   }
 
-  // Re-fetch ranges from Tabulator instance to get current state (selectedRanges may be stale)
   const currentRanges = tabulatorInstance.getRanges() || []
   const rangesToUse = currentRanges.length > 0 ? currentRanges : selectedRanges
 
@@ -89,7 +66,6 @@ export function extractCellsFromRanges(
                   rowIndices.push(rowData.rowIndex)
                 }
               } else {
-                // Fallback: try getIndex() method
                 const rowIdx = row.getIndex ? row.getIndex() : null
                 if (typeof rowIdx === 'number' && !rowIndices.includes(rowIdx)) {
                   rowIndices.push(rowIdx)
@@ -110,11 +86,10 @@ export function extractCellsFromRanges(
               if (field && field.startsWith('col_')) {
                 const colIndex = parseInt(field.replace('col_', ''), 10)
                 if (!isNaN(colIndex) && colIndex >= STATIC_COLUMN_COUNT) {
-                  // Apply column filter if provided
                   if (columnFilter && columnMap) {
                     const colDef = columnMap.get(colIndex)
                     if (!columnFilter(colDef)) {
-                      return // Skip this column
+                      return
                     }
                   }
 
@@ -132,19 +107,14 @@ export function extractCellsFromRanges(
 
           if (rowIndices.length > 0 && columnIndices.length > 0) {
             if (extractRowsOnly) {
-              // For row-only extraction, just collect unique row indices
-              // (cells will be built later based on all matching columns)
               rowIndices.forEach(rowIdx => {
                 if (!cellsToProcess.some(c => c.rowIndex === rowIdx)) {
-                  // Use columnIndex: -1 as marker
                   cellsToProcess.push({ rowIndex: rowIdx, columnIndex: -1 })
                 }
               })
             } else {
-              // Build cell list - all combinations of selected rows × columns
               rowIndices.forEach(rowIdx => {
                 columnIndices.forEach(colIdx => {
-                  // Avoid duplicates
                   const exists = cellsToProcess.some(
                     cell => cell.rowIndex === rowIdx && cell.columnIndex === colIdx
                   )
@@ -159,15 +129,10 @@ export function extractCellsFromRanges(
               console.log(`extractCellsFromRanges: Range ${rangeIndex} - Added ${extractRowsOnly ? rowIndices.length : rowIndices.length * columnIndices.length} cells`)
             }
             
-            // CRITICAL FIX: Continue to next range instead of returning
-            // REASONING: We need to process ALL ranges, not just the first one
-            // The early return was causing only the first range to be processed,
-            // which is why multi-cell selections were only marking the first cell
-            continue // Skip fallback method for this range, but continue processing other ranges
+            continue
           }
         }
 
-        // Method 2: Fallback - Use getRangesData() and match rows by data (only if Method 1 failed)
         if (tabulatorData && tabulatorInstance?.getRangesData) {
           const rangesData = tabulatorInstance.getRangesData()
           if (rangesData && rangesData[rangeIndex]) {
@@ -187,11 +152,10 @@ export function extractCellsFromRanges(
                   if (key.startsWith('col_')) {
                     const colIdx = parseInt(key.replace('col_', ''), 10)
                     if (!isNaN(colIdx) && colIdx >= STATIC_COLUMN_COUNT) {
-                      // Apply column filter if provided
                       if (columnFilter && columnMap) {
                         const colDef = columnMap.get(colIdx)
                         if (!columnFilter(colDef)) {
-                          return // Skip this column
+                          return
                         }
                       }
 
@@ -199,7 +163,6 @@ export function extractCellsFromRanges(
                       if (!cellKeySet.has(cellKey)) {
                         cellKeySet.add(cellKey)
                         if (extractRowsOnly) {
-                          // For row-only, add row once
                           if (!cellsToProcess.some(c => c.rowIndex === matchedRow.rowIndex)) {
                             cellsToProcess.push({ rowIndex: matchedRow.rowIndex, columnIndex: -1 })
                           }
@@ -249,7 +212,7 @@ export function extractCellsFromRanges(
   return cellsToProcess
 }
 
-// Extract only row indices from ranges (simplified version for row-based operations)
+// Extract only row indices from ranges
 export function extractRowIndicesFromRanges(
   tabulatorInstance: Tabulator | null,
   selectedRanges: any[],
@@ -263,7 +226,6 @@ export function extractRowIndicesFromRanges(
     extractRowsOnly: true
   })
 
-  // Extract unique row indices
   const rowIndices = new Set<number>()
   cells.forEach(cell => {
     if (cell.rowIndex >= 0) {

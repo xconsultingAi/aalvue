@@ -9,35 +9,28 @@ import type {
 } from '@/types'
 import { STATIC_COLUMN_COUNT } from '@/types'
 import sampleData from '@/data/sample-data-table.json'
+import { createApiClient } from '@/utils/apiClient'
+import { debounce } from '@/utils/debounce'
 
 export type ViewMode = 'qc' | 'report' | 'customer'
 
-// Pinia Store for Data Table (Tabulator version)
-// Centralized state management with efficient Map-based lookups (O(1) access)
 export const useDataTableStore = defineStore('dataTable', () => {
-  // ==================== STATE ====================
-  
   const data = shallowRef<OptimizedDataTablePayload | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
   const hasUnsavedChanges = ref(false)
   const initialData = ref<OptimizedDataTablePayload | null>(null)
+  const apiEndpoint = ref<string | null>(null)
+  const csrfToken = ref<string | null>(null)
   
-  // Track changed row indices for incremental updates (must track BEFORE triggerRef)
   const changedRowIndices = ref<Set<number>>(new Set())
-
-  // Batching mechanism to reduce reactivity triggers (O(N) to O(1) for bulk operations)
   let isBatching = false
   let batchChangedRows = new Set<number>()
 
-  // Cache for rowMap and cellMap memoization (avoids recalculating all rows/cells on every triggerRef)
   const rowMapCache = new Map<number, RowData>()
   const cellMapCache = new Map<number, Map<number, CellValue>>()
   const lastDataRefForMaps = ref<any>(null)
 
-  // ==================== COMPUTED PROPERTIES ====================
-
-  // Column map for O(1) lookup by columnIndex
   const columnMap = computed<ColumnMap>(() => {
     if (!data.value) return new Map()
     
@@ -99,36 +92,25 @@ export const useDataTableStore = defineStore('dataTable', () => {
     return map
   })
 
-  /**
-   * Cell map for O(1) lookup by rowIndex and columnIndex
-   * Structure: Map<rowIndex, Map<columnIndex, CellValue>>
-   * Phase 9.1.1: Memoized implementation - only rebuilds changed rows/cells
-   * REASONING: This is the CRITICAL bottleneck - avoids 50,000+ operations (1000 rows × 50 cells) for a single cell change
-   */
   const cellMap = computed<Map<number, Map<number, CellValue>>>(() => {
     if (!data.value) {
       cellMapCache.clear()
       return new Map()
     }
     
-    // Check if data reference changed (handled in rowMap, but double-check)
     if (data.value !== lastDataRefForMaps.value) {
       cellMapCache.clear()
     }
     
-    // Only rebuild changed rows, reuse cached rows for unchanged ones
     const map = new Map<number, Map<number, CellValue>>()
     
     data.value.rows.forEach(row => {
       const rowIndex = row.rowIndex
-      
-      // Check if this row needs to be rebuilt
       const needsRebuild = 
         changedRowIndices.value.has(rowIndex) || 
         !cellMapCache.has(rowIndex)
       
       if (needsRebuild) {
-        // Rebuild cell map for row
         const rowCellMap = new Map<number, CellValue>()
         row.values.forEach(cell => {
           rowCellMap.set(cell.columnIndex, cell)
@@ -136,12 +118,10 @@ export const useDataTableStore = defineStore('dataTable', () => {
         cellMapCache.set(rowIndex, rowCellMap)
         map.set(rowIndex, rowCellMap)
       } else {
-        // Reuse cached cell map
         const cachedRowCellMap = cellMapCache.get(rowIndex)
         if (cachedRowCellMap) {
           map.set(rowIndex, cachedRowCellMap)
         } else {
-          // Fallback: cache miss
           const rowCellMap = new Map<number, CellValue>()
           row.values.forEach(cell => {
             rowCellMap.set(cell.columnIndex, cell)
@@ -166,7 +146,6 @@ export const useDataTableStore = defineStore('dataTable', () => {
     return map
   })
 
-  // Analyte Code Map for O(1) lookup by analyteIndex
   const analyteCodeMap = computed<Map<number, string>>(() => {
     if (!data.value?.metadata?.schema?.analytes) return new Map()
     
@@ -177,13 +156,9 @@ export const useDataTableStore = defineStore('dataTable', () => {
     return map
   })
 
-  /**
-   * All columns (static + dynamic) for Tabulator
-   */
   const allColumns = computed<ColumnDefinition[]>(() => {
     if (!data.value) return []
     
-    // Static columns (indices 0-4)
     const staticColumns: ColumnDefinition[] = [
       {
         columnIndex: 0,
@@ -246,13 +221,11 @@ export const useDataTableStore = defineStore('dataTable', () => {
       }
     }
     
-    // Dynamic columns: use cellMap for O(1) lookup
     const rowCellMap = cellMap.value.get(row.rowIndex)
     const cell = rowCellMap?.get(columnIndex)
     return cell?.value ?? null
   }
 
-  // Get cell value by rowIndex and columnIndex (uses rowMap for O(1) lookup)
   const getCellValueByIndex = (rowIndex: number, columnIndex: number): string | number | null => {
     if (!data.value) return null
     
@@ -310,24 +283,16 @@ export const useDataTableStore = defineStore('dataTable', () => {
       row.values.push(newCell)
     }
     
-    // Track changed row BEFORE triggering reactivity (triggerRef immediately triggers tabulatorData recomputation)
-    changedRowIndices.value.add(rowIndex)
-    
-    // Batch support - defer triggerRef if batching is active
     if (isBatching) {
       batchChangedRows.add(rowIndex)
     } else {
-      // CRITICAL: Trigger reactivity since data is a shallowRef
-      // Modifying nested properties doesn't automatically trigger reactivity
+      changedRowIndices.value.add(rowIndex)
       triggerRef(data)
     }
     
-    // Mark as having unsaved changes
     hasUnsavedChanges.value = true
   }
 
-  // Result column map for O(1) lookup by serviceItemIndex and analyteIndex
-  // Key format: `${serviceItemIndex}_${analyteIndex}`
   const resultColumnMap = computed<Map<string, ColumnDefinition>>(() => {
     if (!data.value) return new Map()
     
@@ -352,11 +317,9 @@ export const useDataTableStore = defineStore('dataTable', () => {
     return resultColumnMap.value.get(key) || null
   }
 
-  // Mark result cell as final (uses rowMap and cellMap for O(1) lookups)
   const markResultCellFinal = (rowIndex: number, columnIndex: number): void => {
     if (!data.value) return
     
-    // Phase 9.1.1: Use cache directly instead of accessing computed properties
     let row = rowMapCache.get(rowIndex)
     if (!row) {
       row = data.value.rows.find(r => r.rowIndex === rowIndex)
@@ -366,7 +329,6 @@ export const useDataTableStore = defineStore('dataTable', () => {
     }
     if (!row) return
     
-    // Use cellMap cache directly instead of accessing computed
     let rowCellMap = cellMapCache.get(rowIndex)
     if (!rowCellMap) {
       rowCellMap = new Map<number, CellValue>()
@@ -377,47 +339,37 @@ export const useDataTableStore = defineStore('dataTable', () => {
     }
     let cell = rowCellMap.get(columnIndex)
     
-    // Create cell if it doesn't exist but has a value (getCellValueByIndex might return value without cell object)
     if (!cell) {
-      // Check if cell actually has a value before creating
       const cellValue = getCellValueByIndex(rowIndex, columnIndex)
       if (cellValue === null || cellValue === '') {
-        // No value - skip
         if (import.meta.env.DEV) {
           console.warn(`markResultCellFinal: Cell at row ${rowIndex}, col ${columnIndex} has no value, skipping`)
         }
         return
       }
-      // Create new cell object
       if (import.meta.env.DEV) {
         console.log(`markResultCellFinal: Creating missing cell object for row ${rowIndex}, col ${columnIndex}`)
       }
       cell = { columnIndex, value: cellValue }
       row.values.push(cell)
-      rowCellMap.set(columnIndex, cell) // Update cache
+      rowCellMap.set(columnIndex, cell)
     }
     
     cell.isFinal = true
     cell.markedFinalAt = new Date().toISOString()
     
-    // Phase 6.2: Track changed row BEFORE triggering reactivity
-    changedRowIndices.value.add(rowIndex)
-    
-    // Phase 10: Batch support - defer triggerRef if batching is active
-    // REASONING: For multi-cell operations, batch all changes and trigger once instead of N times
     if (isBatching) {
       batchChangedRows.add(rowIndex)
     } else {
+      changedRowIndices.value.add(rowIndex)
       triggerRef(data)
     }
     hasUnsavedChanges.value = true
   }
 
-  // Clear result cell (remove value and metadata) - uses rowMap for O(1) lookup
   const clearResultCell = (rowIndex: number, columnIndex: number): void => {
     if (!data.value) return
     
-    // Phase 9.1.1: Use cache directly instead of accessing computed properties
     let row = rowMapCache.get(rowIndex)
     if (!row) {
       row = data.value.rows.find(r => r.rowIndex === rowIndex)
@@ -427,35 +379,25 @@ export const useDataTableStore = defineStore('dataTable', () => {
     }
     if (!row) return
     
-    // Filter out the cell from values array
-    // Note: We use filter here to maintain the array structure
     row.values = row.values.filter(cell => cell.columnIndex !== columnIndex)
     
-    // Update cellMapCache - remove cell from cache
     const rowCellMap = cellMapCache.get(rowIndex)
     if (rowCellMap) {
       rowCellMap.delete(columnIndex)
     }
     
-    // Phase 6.2: Track changed row BEFORE triggering reactivity
-    changedRowIndices.value.add(rowIndex)
-    
-    // Phase 10: Batch support - defer triggerRef if batching is active
     if (isBatching) {
       batchChangedRows.add(rowIndex)
     } else {
+      changedRowIndices.value.add(rowIndex)
       triggerRef(data)
     }
     hasUnsavedChanges.value = true
   }
 
-  // Set manual correction for result cell (uses rowMap and cellMap for O(1) lookups)
-  // baselineCorrection: Baseline correction value (4 decimals)
-  // multiplier: Multiplier value (2 decimals)
   const setManualCorrection = (rowIndex: number, columnIndex: number, baselineCorrection?: number, multiplier?: number): void => {
     if (!data.value) return
     
-    // Phase 9.1.1: Use cache directly instead of accessing computed properties
     let row = rowMapCache.get(rowIndex)
     if (!row) {
       row = data.value.rows.find(r => r.rowIndex === rowIndex)
@@ -516,43 +458,30 @@ export const useDataTableStore = defineStore('dataTable', () => {
       }
     }
     
-    // Phase 6.2: Track changed row BEFORE triggering reactivity
-    changedRowIndices.value.add(rowIndex)
-    
-    // Phase 10: Batch support - defer triggerRef if batching is active
     if (isBatching) {
       batchChangedRows.add(rowIndex)
     } else {
+      changedRowIndices.value.add(rowIndex)
       triggerRef(data)
     }
     hasUnsavedChanges.value = true
   }
 
-  // ==================== BATCHING METHODS ====================
-  
-  /**
-   * Start a batch operation - defer all triggerRef calls until endBatch()
-   * REASONING: For multi-cell operations, batch all changes and trigger once
-   * This reduces recomputation from O(N) to O(1) for bulk operations
-   */
   const startBatch = (): void => {
     isBatching = true
     batchChangedRows.clear()
   }
   
-  // End a batch operation - trigger reactivity once for all batched changes
   const endBatch = (): void => {
     if (!isBatching) return
     
     isBatching = false
     
-    // Add all batched rows to changedRowIndices
     batchChangedRows.forEach(rowIndex => {
       changedRowIndices.value.add(rowIndex)
     })
     batchChangedRows.clear()
     
-    // Single triggerRef for all batched changes
     triggerRef(data)
   }
 
@@ -561,12 +490,12 @@ export const useDataTableStore = defineStore('dataTable', () => {
   const selectedServiceItemIndex = ref<number | null>(null)
   const showReportableOnly = ref<boolean>(true)
   const viewMode = ref<ViewMode>('qc')
-  
-  // Phase 11: Filter change counter to signal component to clear cache
-  // REASONING: Increments synchronously when filters change, allowing component to clear cache before computed runs
   const filterChangeCounter = ref(0)
+  const isFiltering = ref(false)
   
-  // ==================== FILTER COMPUTED ====================
+  let filteredColumnsCache: ColumnDefinition[] = []
+  let filteredColumnsCacheKey: string = ''
+  let lastDataRefForColumns: OptimizedDataTablePayload | null = null
   
   const availableServiceItems = computed(() => {
     if (!data.value?.metadata?.schema?.serviceItems) return []
@@ -592,11 +521,26 @@ export const useDataTableStore = defineStore('dataTable', () => {
   })
   
   const filteredColumns = computed<ColumnDefinition[]>(() => {
-    if (!data.value) return []
+    if (!data.value) {
+      filteredColumnsCache = []
+      filteredColumnsCacheKey = ''
+      return []
+    }
+    
+    if (data.value !== lastDataRefForColumns) {
+      filteredColumnsCache = []
+      filteredColumnsCacheKey = ''
+      lastDataRefForColumns = data.value
+    }
+    
+    const cacheKey = `${selectedServiceItemIndex.value ?? 'null'}-${showReportableOnly.value}-${viewMode.value}`
+    
+    if (filteredColumnsCacheKey === cacheKey && filteredColumnsCache.length > 0) {
+      return filteredColumnsCache
+    }
     
     let columns = [...allColumns.value]
     
-    // Filter 1: Service Item
     if (selectedServiceItemIndex.value !== null) {
       columns = columns.filter(
         col => col.serviceItemIndex === selectedServiceItemIndex.value || col.columnIndex < STATIC_COLUMN_COUNT
@@ -619,7 +563,6 @@ export const useDataTableStore = defineStore('dataTable', () => {
       )
     }
     
-    // Filter 3: View Mode
     if (viewMode.value === 'report') {
       columns = columns.filter(col => {
         if (col.columnIndex < STATIC_COLUMN_COUNT) return true
@@ -629,6 +572,9 @@ export const useDataTableStore = defineStore('dataTable', () => {
       })
     }
     
+    filteredColumnsCache = columns
+    filteredColumnsCacheKey = cacheKey
+    
     return columns
   })
   
@@ -637,7 +583,6 @@ export const useDataTableStore = defineStore('dataTable', () => {
     
     let rows = [...data.value.rows]
     
-    // Filter by Service Item traveler numbers
     if (selectedServiceItemIndex.value !== null) {
       const serviceItem = data.value.metadata?.schema?.serviceItems
         ?.find(si => si.siIndex === selectedServiceItemIndex.value)
@@ -666,81 +611,313 @@ export const useDataTableStore = defineStore('dataTable', () => {
     return count
   })
   
-  // FILTER ACTIONS
+  const debouncedSetServiceItem = debounce((siIndex: number | null) => {
+    selectedServiceItemIndex.value = siIndex
+    filterChangeCounter.value++
+  }, 200)
+  
+  const debouncedSetReportableOnly = debounce((enabled: boolean) => {
+    showReportableOnly.value = enabled
+    filterChangeCounter.value++
+  }, 200)
+  
+  const debouncedSetViewMode = debounce((mode: ViewMode) => {
+    viewMode.value = mode
+    filterChangeCounter.value++
+  }, 200)
   
   function setServiceItemFilter(siIndex: number | null) {
-    selectedServiceItemIndex.value = siIndex
+    isFiltering.value = true
+    debouncedSetServiceItem(siIndex)
   }
   
   function setReportableOnlyFilter(enabled: boolean) {
-    showReportableOnly.value = enabled
+    isFiltering.value = true
+    debouncedSetReportableOnly(enabled)
   }
   
   function setViewMode(mode: ViewMode) {
-    viewMode.value = mode
+    isFiltering.value = true
+    debouncedSetViewMode(mode)
   }
   
   function clearAllFilters() {
+    isFiltering.value = true
     selectedServiceItemIndex.value = null
     showReportableOnly.value = true
     viewMode.value = 'qc'
+    filterChangeCounter.value++
   }
   
   function clearServiceItemFilter() {
+    isFiltering.value = true
     selectedServiceItemIndex.value = null
+    filterChangeCounter.value++
   }
   
   function clearReportableOnlyFilter() {
+    isFiltering.value = true
     showReportableOnly.value = true
+    filterChangeCounter.value++
   }
 
-  // ==================== ACTIONS ====================
+  async function retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    maxRetries: number = 3,
+    initialDelay: number = 1000
+  ): Promise<T> {
+    let lastError: Error | null = null
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn()
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+        
+        // Only retry on network errors (TypeError from fetch), not HTTP errors
+        // Network errors typically have names like 'TypeError' or 'NetworkError'
+        const isNetworkError = lastError.name === 'TypeError' || 
+                              lastError.name === 'NetworkError' ||
+                              lastError.message.includes('Failed to fetch') ||
+                              lastError.message.includes('NetworkError')
+        
+        // Don't retry on HTTP errors or other non-network errors
+        if (!isNetworkError) {
+          throw lastError
+        }
+        
+        if (attempt < maxRetries - 1) {
+          const delay = initialDelay * Math.pow(2, attempt)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+    }
+    
+    throw lastError || new Error('Retry failed')
+  }
 
-  // Load data from JSON file or API
   async function loadData() {
+    console.log('[loadData] Starting loadData', {
+      hasApiEndpoint: !!apiEndpoint.value,
+      apiEndpoint: apiEndpoint.value,
+      hasCsrfToken: !!csrfToken.value,
+      hasInitialData: !!initialData.value
+    })
+    
     loading.value = true
     error.value = null
     hasUnsavedChanges.value = false
     
     try {
-      // Use initialData if provided, otherwise use sampleData
-      const dataToLoad = initialData.value || sampleData
-      data.value = dataToLoad as OptimizedDataTablePayload
-      
-      if (import.meta.env.DEV) {
-        console.log('Data loaded:', {
-          hasData: !!data.value,
-          rowsCount: data.value?.rows?.length,
-          columnsCount: allColumns.value.length,
-          filteredColumnsCount: filteredColumns.value.length
+      if (apiEndpoint.value) {
+        console.log('[loadData] Fetching from API:', apiEndpoint.value)
+        const apiClient = createApiClient({ csrfToken: csrfToken.value || undefined })
+        
+        // Use retry logic for network errors (not HTTP errors)
+        console.log('[loadData] Making API request...')
+        const response = await retryWithBackoff(
+          () => apiClient.get(apiEndpoint.value!),
+          3,
+          1000
+        )
+        
+        console.log('[loadData] API response received:', {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText
         })
+        
+        if (!response.ok) {
+          let errorMessage = 'Failed to load data'
+          
+          switch (response.status) {
+            case 401:
+              errorMessage = 'Authentication required. Please log in and try again.'
+              break
+            case 403:
+              errorMessage = 'Access denied. You do not have permission to view this data.'
+              break
+            case 404:
+              errorMessage = 'Data not found for this job code. Please verify the job code.'
+              break
+            case 500:
+              errorMessage = 'Server error. Please try again later or contact support.'
+              break
+            case 503:
+              errorMessage = 'Service temporarily unavailable. Please try again in a few moments.'
+              break
+            default:
+              errorMessage = `Failed to load data: ${response.status} ${response.statusText}`
+          }
+          
+          try {
+            const errorData = await response.json()
+            if (errorData.error) {
+              errorMessage = errorData.error
+            }
+          } catch {
+          }
+          
+          throw new Error(errorMessage)
+        }
+        
+        const payload = await response.json()
+        if (import.meta.env.DEV) {
+          console.log('[loadData] Payload received:', {
+            hasPayload: !!payload,
+            hasRows: !!payload?.rows,
+            rowsCount: payload?.rows?.length,
+            hasMetadata: !!payload?.metadata,
+            firstRow: payload?.rows?.[0],
+            firstRowValues: payload?.rows?.[0]?.values,
+            firstRowValuesCount: payload?.rows?.[0]?.values?.length,
+            sampleCellValue: payload?.rows?.[0]?.values?.[0],
+            hasColumnDefinitions: !!payload?.metadata?.schema?.columnDefinitions,
+            columnDefinitionsCount: payload?.metadata?.schema?.columnDefinitions?.length,
+            sampleColumnDef: payload?.metadata?.schema?.columnDefinitions?.[0]
+          })
+        }
+        
+        data.value = payload as OptimizedDataTablePayload
+      } else if (initialData.value) {
+        data.value = initialData.value as OptimizedDataTablePayload
+        
+        if (import.meta.env.DEV) {
+          console.log('Data loaded from initialData:', {
+            hasData: !!data.value,
+            rowsCount: data.value?.rows?.length
+          })
+        }
+      } else {
+        data.value = sampleData as OptimizedDataTablePayload
+        
+        if (import.meta.env.DEV) {
+          console.warn('Using sample data - no API endpoint or initialData provided')
+        }
       }
     } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to load data'
-      console.error('Error loading data:', err)
+      console.error('[loadData] Error caught:', err)
+      if (err instanceof Error && err.message === 'Request timeout') {
+        error.value = 'Request timed out. The server is taking too long to respond. Please try again.'
+      } else {
+        error.value = err instanceof Error ? err.message : 'Failed to load data'
+      }
+      console.error('[loadData] Error set in store:', error.value)
     } finally {
       loading.value = false
+      console.log('[loadData] Finished, loading set to false')
     }
   }
 
-  /**
-   * Set initial data from external source
-   */
   function setInitialData(payload: OptimizedDataTablePayload | null) {
     initialData.value = payload
   }
 
-  // Save data (mocked for now)
+  /**
+   * Set API endpoint for data loading
+   */
+  function setApiEndpoint(endpoint: string | null) {
+    apiEndpoint.value = endpoint
+  }
+
+  function setCsrfToken(token: string | null) {
+    csrfToken.value = token
+  }
+
+  /**
+   * Set loading state explicitly (for immediate UI feedback)
+   */
+  function setLoading(value: boolean) {
+    loading.value = value
+  }
+
   async function saveData(): Promise<boolean> {
-    if (!data.value) return false
+    loading.value = true
+    error.value = null
+    
+    if (!data.value) {
+      loading.value = false
+      throw new Error('No data to save')
+    }
+    
+    if (!apiEndpoint.value) {
+      loading.value = false
+      throw new Error('Cannot save: API endpoint not configured')
+    }
     
     try {
-      await new Promise(resolve => setTimeout(resolve, 500))
+      console.log('[saveData] Starting save', {
+        apiEndpoint: apiEndpoint.value,
+        hasCsrfToken: !!csrfToken.value,
+        rowsCount: data.value.rows?.length
+      })
+      
+      const apiClient = createApiClient({ csrfToken: csrfToken.value || undefined })
+      
+      console.log('[saveData] Making POST request...')
+      const response = await apiClient.post(apiEndpoint.value, data.value)
+      
+      console.log('[saveData] API response received:', {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText
+      })
+      
+      if (!response.ok) {
+        let errorMessage = 'Failed to save data'
+        
+        switch (response.status) {
+          case 401:
+            errorMessage = 'Authentication required. Please log in and try again.'
+            break
+          case 403:
+            errorMessage = 'Access denied. You do not have permission to save this data.'
+            break
+          case 400:
+            errorMessage = 'Invalid data. Please check your changes and try again.'
+            break
+          case 404:
+            errorMessage = 'Job not found. Please verify the job code.'
+            break
+          case 500:
+            errorMessage = 'Server error. Please try again later or contact support.'
+            break
+          case 503:
+            errorMessage = 'Service temporarily unavailable. Please try again in a few moments.'
+            break
+          default:
+            errorMessage = `Failed to save data: ${response.status} ${response.statusText}`
+        }
+        
+        try {
+          const errorData = await response.json()
+          if (errorData.error) {
+            errorMessage = errorData.error
+          }
+        } catch {
+        }
+        
+        throw new Error(errorMessage)
+      }
+      
+      const result = await response.json()
+      
+      if (import.meta.env.DEV) {
+        console.log('[saveData] Save successful:', {
+          success: result.success,
+          message: result.message
+        })
+      }
+      
       hasUnsavedChanges.value = false
       return true
     } catch (err) {
-      console.error('Error saving data:', err)
-      return false
+      console.error('[saveData] Error caught:', err)
+      error.value = null
+      throw err
+    } finally {
+      loading.value = false
+      console.log('[saveData] Finished, loading set to false')
     }
   }
 
@@ -757,56 +934,50 @@ export const useDataTableStore = defineStore('dataTable', () => {
   }
 
   return {
-    // State
     data,
     loading,
     error,
     hasUnsavedChanges,
-    // Computed
     columnMap,
     rowMap,
     cellMap,
     resultColumnMap,
     allColumns,
     getCellValue,
-    // Data Operations
     getCellValueByIndex,
     setCellValue,
     findResultColumn,
     markResultCellFinal,
     clearResultCell,
     setManualCorrection,
-    // Batching
     startBatch,
     endBatch,
-    // Filter State
     selectedServiceItemIndex,
     showReportableOnly,
     viewMode,
     filterChangeCounter,
-    // Filter Computed
+    isFiltering,
     availableServiceItems,
     availableAnalytes,
     filteredColumns,
     filteredRows,
     hasActiveFilters,
     activeFilterCount,
-    // Cached code maps for O(1) lookups
     serviceItemCodeMap,
     analyteCodeMap,
-    // Actions
     loadData,
     saveData,
     clearUnsavedChanges,
     setInitialData,
-    // Filter Actions
+    setApiEndpoint,
+    setCsrfToken,
+    setLoading,
     setServiceItemFilter,
     setReportableOnlyFilter,
     setViewMode,
     clearAllFilters,
     clearServiceItemFilter,
     clearReportableOnlyFilter,
-    // Changed row tracking for incremental updates
     changedRowIndices,
     clearChangedRows
   }

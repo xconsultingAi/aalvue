@@ -84,7 +84,7 @@ const emit = defineEmits<{
 const baseline = ref<number | null>(null)
 const multiplier = ref<number | null>(null)
 
-// Reset values when dialog opens/closes
+// Reset values on dialog open/close
 watch(() => props.isVisible, (newValue) => {
   if (newValue) {
     baseline.value = null

@@ -39,6 +39,8 @@ import { useGridActions } from '@/composables/useGridActions'
 import { useCellFormatters } from '@/composables/useCellFormatters'
 import { extractCellsFromRanges } from '@/utils/tabulatorHelpers'
 import { validateTabulatorOperation } from '@/utils/validationHelpers'
+import { createApiClient } from '@/utils/apiClient'
+import { generateTabulatorLoaderHTML } from '@/utils/loaderHelpers'
 
 const store = useDataTableStore()
 const loadingStore = useLoadingStore()
@@ -62,7 +64,7 @@ const apiEndpoint = inject<string | undefined>('apiEndpoint')
 
 const lastColumnFields = ref<string[]>([])
 
-// Row cache for tabulatorData memoization (reduces computation from O(rows × columns) to O(changed_rows × columns))
+// Row cache for tabulatorData memoization - O(rows × columns) to O(changed_rows × columns)
 const rowCache = new Map<number, any>()
 const lastFilteredColumns = ref<ColumnDefinition[]>([])
 const lastFilteredRowsCount = ref<number | null>(null)
@@ -70,10 +72,10 @@ const lastDataRef = ref<any>(null)
 // Cache previous result array (non-reactive to avoid reactivity loops)
 let previousTabulatorData: any[] = []
 
-// Track if formatter refresh is needed (only for final indicator changes, not simple value updates)
+// Track formatter refresh needed (final indicator changes only, not value updates)
 const needsFormatterRefresh = ref(false)
 
-// Cache filteredColumns to avoid computed recalculation in buildSingleRowData
+// Cache filteredColumns to avoid computed recalculation
 let cachedFilteredColumns: ColumnDefinition[] = []
 let cachedColumnIndicesString: string = ''
 
@@ -81,7 +83,7 @@ let cachedColumnIndicesString: string = ''
 let cachedTabulatorColumns: any[] = []
 let cachedTabulatorColumnIndices: string = ''
 
-// Extract all field names from nested column structure for smart watch comparison
+// Extract field names from nested column structure for watch comparison
 function extractColumnFields(columns: any[]): string[] {
   const fields: string[] = []
   columns.forEach(col => {
@@ -106,21 +108,21 @@ function extractColumnFields(columns: any[]): string[] {
   return fields
 }
 
-// Get Service Item Code for a column using cached map (O(1) lookup)
+// Get Service Item Code using cached map (O(1) lookup)
 function getServiceItemCode(col: ColumnDefinition): string {
   if (col.serviceItemIndex < 0) return ''
   
   return store.serviceItemCodeMap.get(col.serviceItemIndex) || ''
 }
 
-// Get Analyte Code for a column using cached map (O(1) lookup)
+// Get Analyte Code using cached map (O(1) lookup)
 function getAnalyteCode(col: ColumnDefinition): string {
   if (col.analyteIndex < 0) return ''
   
   return store.analyteCodeMap.get(col.analyteIndex) || ''
 }
 
-// Get Analyte properties (lowerLimit, upperLimit, unit) for a column
+// Get Analyte properties (lowerLimit, upperLimit, unit)
 function getAnalyteProperties(col: ColumnDefinition): { lowerLimit: string; upperLimit: string; unit: string } | null {
   if (col.analyteIndex < 0 || !store.data?.metadata?.schema?.analytes) return null
   
@@ -177,7 +179,7 @@ function isSelectedWavelength(col: ColumnDefinition): boolean {
   return col.columnType === 'rawdata' && col.isSelected === true
 }
 
-// Build row data map from tabulatorData for O(1) row lookups
+// Build row data map for O(1) row lookups
 function buildRowDataMap(): Map<number, any> {
   const rowDataMap = new Map<number, any>()
   tabulatorData.value.forEach((row: any) => {
@@ -201,16 +203,26 @@ function getAffectedRows(cells: Array<{rowIndex: number, columnIndex: number}>):
 
 // Build single row data for Tabulator format (allows incremental row updates)
 function buildSingleRowData(rowIndex: number): any | null {
-  if (!store.data) return null
+  if (!store.data) {
+    return null
+  }
   
   // Use cache directly to avoid triggering computed property recalculation
   const row = store.data.rows.find(r => r.rowIndex === rowIndex)
-  if (!row) return null
+  if (!row) {
+    return null
+  }
   
   // Build cell value map for O(1) lookup
   const cellValueMap = new Map<number, string | number>()
+  if (!row.values || !Array.isArray(row.values)) {
+    return null
+  }
+  
   row.values.forEach(cell => {
-    cellValueMap.set(cell.columnIndex, cell.value)
+    if (cell && cell.columnIndex !== undefined) {
+      cellValueMap.set(cell.columnIndex, cell.value)
+    }
   })
   
   const rowObj: any = {
@@ -224,23 +236,29 @@ function buildSingleRowData(rowIndex: number): any | null {
   }
   
   // Dynamic columns - use cached filteredColumns to avoid computed recalculation
+  // If cache is empty, try to use store.filteredColumns directly (fallback)
+  let columnsToUse = cachedFilteredColumns
   if (cachedFilteredColumns.length === 0) {
-    // Cache empty - return row with only static columns
-    if (import.meta.env.DEV) {
-      console.warn('[Performance] cachedFilteredColumns is empty in buildSingleRowData - returning row with static columns only')
-    }
+    columnsToUse = store.filteredColumns
+    // Update cache for next time
+    cachedFilteredColumns = [...columnsToUse]
+  }
+  
+  if (columnsToUse.length === 0) {
     return rowObj // Return early with only static columns
   }
-  cachedFilteredColumns.forEach((col: ColumnDefinition) => {
+  
+  columnsToUse.forEach((col: ColumnDefinition) => {
     if (col.columnIndex >= STATIC_COLUMN_COUNT) {
-      rowObj[`col_${col.columnIndex}`] = cellValueMap.get(col.columnIndex) ?? null
+      const cellValue = cellValueMap.get(col.columnIndex)
+      rowObj[`col_${col.columnIndex}`] = cellValue ?? null
     }
   })
   
   return rowObj
 }
 
-// Performance measurement helper (DEV mode only)
+// Performance measurement helper (DEV only)
 function measurePerformance<T>(operationName: string, operation: () => T): T {
   if (import.meta.env.DEV) {
     const startTime = performance.now()
@@ -253,30 +271,18 @@ function measurePerformance<T>(operationName: string, operation: () => T): T {
   return operation()
 }
 
-// Safe Tabulator update wrapper with error handling
-function safeTabulatorUpdate(updateFn: () => void, fallbackFn?: () => void): void {
-  try {
-    updateFn()
-  } catch (updateError) {
-    console.error('Error updating Tabulator:', updateError)
-    if (fallbackFn) {
-      fallbackFn()
-    }
-  }
-}
-
 // Manual Correction dialog functions moved to composable
 
-// Getter function for tabulator instance (used by composables)
+// Getter for tabulator instance (used by composables)
 function getTabulatorInstance(): Tabulator | null {
   return tabulatorInstance
 }
 
-// Context menu functions - will be initialized after tabulatorData is defined
+// Context menu functions - initialized after tabulatorData is defined
 let getCellContextMenu: ((e: MouseEvent, cell: any) => any[]) | null = null
 
-// Convert column definitions to Tabulator format with grouped headers
-// Rebuilds only when filters or schema change, not on cell value changes
+// Convert columns to Tabulator format with grouped headers
+// Rebuilds only when filters/schema change, not on cell value changes
 const tabulatorColumns = computed(() => {
   // Memoize based on column indices (rebuilding nested structure is expensive)
   const currentColumnIndices = store.filteredColumns.map(c => c.columnIndex).join(',')
@@ -304,7 +310,7 @@ const tabulatorColumns = computed(() => {
   // Static columns: 3-level grouped structure (Job/Customer/Columns)
   const staticColumns: any[] = []
   
-  // Define minWidth for each static column
+  // MinWidth for each static column
   const staticColumnMinWidths: Record<number, number> = {
     0: 60,   // SeqNo: numbers
     1: 150,  // SampleName: longest name + note icon
@@ -318,16 +324,15 @@ const tabulatorColumns = computed(() => {
       const staticCol: any = {
         title: col.label,
         field: `col_${col.columnIndex}`,
-        frozen: true, // Tabulator uses 'frozen' instead of 'pinned'
-        minWidth: staticColumnMinWidths[col.columnIndex] || 100, // Content-based minWidth
-        widthShrink: 0, // Prevent shrinking below minWidth
+        // frozen set on parent group, not individual columns (Tabulator requirement)
+        minWidth: staticColumnMinWidths[col.columnIndex] || 100,
+        widthShrink: 0,
         headerTooltip: col.label,
         cssClass: 'static-column',
-        headerSort: false, // Disable sorting to avoid warning with selectableRangeColumns
-        // Selection disabled via CSS
+        headerSort: false,
       }
       
-      // Add formatter for SampleName to show SampleCode tooltip and note icon
+      // Formatter for SampleName (tooltip and note icon)
       if (col.columnIndex === 1) {
         staticCol.formatter = (cell: any) => cellFormatters.formatSampleName(cell)
       }
@@ -349,21 +354,29 @@ const tabulatorColumns = computed(() => {
     const formattedDate = formatDate(job.dueDate)
     
     // Level 1: Job/Due Date, Level 2: Customer, Level 3: Columns
+    // Note: frozen must be on topmost parent only, not nested groups
     columns.push({
       title: `Job: ${job.code}, Due Date: ${formattedDate}`, // Row 1
-      frozen: true,
+      frozen: true, // Only topmost parent should have frozen
       headerSort: false,
       cssClass: 'static-columns-group',
       columns: [{
         title: `Customer: ${job.customerName} (${job.customerCode})`, // Row 2
-        frozen: true,
+        // Note: Do NOT set frozen here - only topmost parent has frozen
         headerSort: false,
         columns: staticColumns // Row 3: Individual columns
       }]
     })
   } else if (staticColumns.length > 0) {
-    // Fallback: if no job info, just add columns directly
-    columns.push(...staticColumns)
+    // Fallback: if no job info, wrap in a frozen group
+    // Tabulator requires frozen to be on parent group, not individual columns
+    columns.push({
+      title: 'Static Columns',
+      frozen: true,
+      headerSort: false,
+      cssClass: 'static-columns-group',
+      columns: staticColumns
+    })
   }
   
   // Dynamic columns: three-level header (Service Item → Analyte → Column)
@@ -397,10 +410,8 @@ const tabulatorColumns = computed(() => {
     const analyteColumnGroups: any[] = []
     
     analyteGroups.forEach((analyteCols, analyteIndex) => {
-      // Format Analyte header with properties (lowerLimit, upperLimit, unit)
       const analyteHeader = formatAnalyteHeader(analyteCols[0])
       
-      // Create columns for this Analyte
       const columnsForAnalyte = analyteCols.map(col => {
         const headerLabel = isSelectedWavelength(col) ? `${col.label} *` : col.label
         
@@ -410,13 +421,12 @@ const tabulatorColumns = computed(() => {
           width: 120,
           headerTooltip: col.label,
           cssClass: `column-type-${col.columnType}`,
-          headerSort: false, // Disable sorting to avoid warning with selectableRangeColumns
-          resizable: true, // Make dynamic columns resizable
-          // Add context menu for right-click on cells
-          contextMenu: getCellContextMenu || undefined // Right-click on cells
+          headerSort: false,
+          resizable: true,
+          contextMenu: getCellContextMenu || undefined
         }
         
-        // Add formatter for result columns to show final indicator
+        // Formatter for result columns (final indicator)
         if (col.columnType === 'result') {
           columnDef.formatter = (cell: any) => cellFormatters.formatResultCell(cell, col)
         }
@@ -445,8 +455,24 @@ const tabulatorColumns = computed(() => {
   return columns
 })
 
+// Helper to compare arrays logically (for computed stability)
+function arraysEqual(arr1: any[], arr2: any[]): boolean {
+  if (arr1.length !== arr2.length) return false
+  for (let i = 0; i < arr1.length; i++) {
+    if (arr1[i].rowIndex !== arr2[i].rowIndex) return false
+    // Compare row data keys
+    const keys1 = Object.keys(arr1[i])
+    const keys2 = Object.keys(arr2[i])
+    if (keys1.length !== keys2.length) return false
+    for (const key of keys1) {
+      if (arr1[i][key] !== arr2[i][key]) return false
+    }
+  }
+  return true
+}
+
 // Convert row data to Tabulator format (memoized - only rebuilds changed rows)
-const tabulatorData = computed(() => {
+const tabulatorData = computed((oldValue: any[] | undefined) => {
   if (!store.data) {
     // Clear cache when data is cleared
     rowCache.clear()
@@ -522,7 +548,8 @@ const tabulatorData = computed(() => {
   let reusedCount = 0
   
   // If no rows changed and columns didn't change, reuse previous result entirely
-  if (!filteredColsChanged && store.changedRowIndices.size === 0 && previousTabulatorData.length === store.filteredRows.length) {
+  const changedRowCount = store.changedRowIndices.size
+  if (!filteredColsChanged && changedRowCount === 0 && previousTabulatorData.length === store.filteredRows.length) {
     // No changes - reuse previous result
     result = previousTabulatorData
     reusedCount = result.length
@@ -567,6 +594,15 @@ const tabulatorData = computed(() => {
   previousTabulatorData = result
   lastFilteredRowsCount.value = currentFilteredRowsCount
   
+  // Vue 3 computed stability: return oldValue if data is logically unchanged
+  // CRITICAL: Skip stability check if formatter refresh is needed (isFinal flag changes don't affect row data values)
+  // REASONING: When marking cells as final, the cell value doesn't change, only metadata (isFinal flag) changes.
+  // The formatter reads isFinal from the store, not from row data. So arraysEqual returns true (data appears unchanged),
+  // but we still need the watch to trigger to refresh formatters. Skip stability check when needsFormatterRefresh is true.
+  if (!needsFormatterRefresh.value && oldValue && Array.isArray(oldValue) && oldValue.length === result.length && arraysEqual(oldValue, result)) {
+    return oldValue // Prevents unnecessary watch triggers
+  }
+  
   // Performance logging to verify cache effectiveness
   if (import.meta.env.DEV && (rebuiltCount > 0 || reusedCount > 0)) {
     const totalRows = store.filteredRows.length
@@ -579,8 +615,7 @@ const tabulatorData = computed(() => {
   return result
 })
 
-// Initialize grid actions composable (provides all action handlers)
-// Must be initialized after tabulatorData is defined
+// Initialize grid actions composable (must be after tabulatorData is defined)
 const gridActions = useGridActions({
   getTabulatorInstance,
   tabulatorData,
@@ -600,8 +635,7 @@ const {
   applyMultiplier
 } = gridActions
 
-// Initialize context menu composable (uses handlers from gridActions)
-// Must be initialized after gridActions is defined
+// Initialize context menu composable (must be after gridActions is defined)
 const contextMenuResult = useContextMenu({
   getTabulatorInstance,
   isCopyingToResult,
@@ -624,7 +658,9 @@ const cellFormatters = useCellFormatters()
 
 // Initialize Tabulator
 function initializeTabulator() {
-  if (!gridContainerRef.value || !store.data) return
+  // Allow initialization if container exists
+  // We always use ajaxRequestFunc now (even in dev mode), so we can initialize without data
+  if (!gridContainerRef.value) return
   
   // Destroy existing instance if any
   if (tabulatorInstance) {
@@ -632,9 +668,88 @@ function initializeTabulator() {
     tabulatorInstance = null
   }
   
-  // Create Tabulator instance
-  tabulatorInstance = new Tabulator(gridContainerRef.value, {
-    data: tabulatorData.value,
+  // Create custom ajax function that uses our apiClient (works in both dev and production)
+  // REASONING: apiClient is smart - returns sample data in dev mode, real API in production
+  // This allows ajaxRequestFunc to be blind to the data source
+  const customAjaxRequest = async (url: string, config: any, params: any) => {
+    if (import.meta.env.DEV) {
+      console.log('[ajaxRequestFunc] Called with:', { url, hasStoreData: !!store.data, hasApiEndpoint: !!store.apiEndpoint })
+    }
+    
+    try {
+      // Use pre-loaded data if available (dev mode) - allows loader to show
+      if (store.data && !store.apiEndpoint) {
+        if (import.meta.env.DEV) {
+          console.log('[ajaxRequestFunc] Data already in store, using it directly')
+        }
+        
+        // Small delay to ensure loader is visible
+        await new Promise(resolve => setTimeout(resolve, 100))
+        await nextTick()
+        
+        const transformedData = tabulatorData.value
+        
+        if (import.meta.env.DEV) {
+          console.log('[ajaxRequestFunc] Using pre-loaded data from store:', {
+            rowsCount: transformedData.length,
+            columnsCount: tabulatorColumns.value.length,
+            sampleRow: transformedData[0]
+          })
+        }
+        
+        return transformedData
+      }
+      
+      // Use apiClient (handles dev/production automatically)
+      const apiClient = createApiClient({ 
+        csrfToken: store.csrfToken || undefined,
+        useSampleData: !store.apiEndpoint
+      })
+      
+      if (import.meta.env.DEV) {
+        console.log('[ajaxRequestFunc] Fetching data via apiClient:', url)
+      }
+      
+      const response = await apiClient.get(url)
+      
+      if (!response.ok) {
+        throw new Error(`Failed to load data: ${response.status} ${response.statusText}`)
+      }
+      
+      const payload = await response.json()
+      
+      store.data = payload
+      await nextTick()
+      
+      const transformedData = tabulatorData.value
+      
+      if (import.meta.env.DEV) {
+        console.log('[ajaxRequestFunc] Data loaded and transformed:', {
+          rowsCount: transformedData.length,
+          columnsCount: tabulatorColumns.value.length
+        })
+      }
+      
+      return transformedData
+    } catch (error: any) {
+      console.error('[ajaxRequestFunc] Error loading data:', error)
+      throw error
+    }
+  }
+  
+  // Determine if we should use ajaxRequestFunc
+  // REASONING: Always use ajaxRequestFunc to ensure loader shows (even in dev mode with pre-loaded data)
+  // This ensures consistent UX - loader always appears during data loading
+  const shouldUseAjax = true // Always use ajaxRequestFunc for loader support
+  
+  // Priority 1: Use Tabulator's built-in loader with ajaxRequestFunc
+  // REASONING: Tabulator's dataLoader automatically shows loader when ajaxRequestFunc is used
+  // Reference: Tabulator 6.3 docs - ajaxRequestFunc option
+  // Build Tabulator config object
+  const tabulatorConfig: any = {
+    data: [], // Start with empty data - no blocking during initialization
+    dataLoader: true, // Enable built-in loader (default: true, but explicit for clarity)
+    dataLoaderLoading: generateTabulatorLoaderHTML('Rendering grid...'), // Consistent loader design - matches DataLoader.vue
     columns: tabulatorColumns.value,
     index: 'rowIndex', // Use rowIndex as the unique identifier for rows (required for updateData)
     layout: 'fitColumns', // Fit columns to available width
@@ -666,23 +781,63 @@ function initializeTabulator() {
     renderComplete: () => {
       if (import.meta.env.DEV) {
         console.timeEnd('tabulator-render')
+        const rowCount = tabulatorInstance && typeof tabulatorInstance.getRowsCount === 'function'
+          ? tabulatorInstance.getRowsCount()
+          : 'N/A'
+        const colCount = tabulatorInstance && typeof tabulatorInstance.getColumns === 'function'
+          ? tabulatorInstance.getColumns().length
+          : tabulatorColumns.value.length
         console.log('Tabulator render complete:', {
-          rows: tabulatorInstance?.getRowsCount(),
-          columns: tabulatorInstance?.getColumns().length
+          rows: rowCount,
+          columns: colCount
         })
       }
-      
-      // Header structure is now built correctly from the start
-      // No post-render DOM manipulation needed
     }
-  })
+  }
+  
+  // Use ajaxRequestFunc to ensure loader shows (works in dev and production)
+  tabulatorConfig.ajaxURL = store.apiEndpoint || '/dev-data'
+  tabulatorConfig.ajaxRequestFunc = customAjaxRequest
   
   if (import.meta.env.DEV) {
-    console.log('Tabulator initialized:', {
-      rows: tabulatorData.value.length,
-      columns: tabulatorColumns.value.length
+    console.log('[Priority 1] Tabulator initialized with ajaxRequestFunc, loader will show automatically', {
+      apiEndpoint: store.apiEndpoint || 'dev mode (using pre-loaded data)',
+      columnsCount: tabulatorColumns.value.length,
+      hasPreLoadedData: !!store.data
     })
   }
+  
+  tabulatorInstance = new Tabulator(gridContainerRef.value, tabulatorConfig)
+  
+  // Manually trigger data load after tableBuilt to ensure ajaxRequestFunc is called
+  tabulatorInstance.on("tableBuilt", () => {
+    if (import.meta.env.DEV) {
+      console.log('[Priority 1] Table built, triggering data load via setData() to ensure ajaxRequestFunc is called', {
+        ajaxURL: tabulatorConfig.ajaxURL,
+        hasAjaxRequestFunc: !!tabulatorConfig.ajaxRequestFunc
+      })
+    }
+    
+    const urlToLoad = store.apiEndpoint || '/dev-data'
+    tabulatorInstance.setData(urlToLoad)
+      .then(() => {
+        if (import.meta.env.DEV) {
+          const rowCount = tabulatorInstance && typeof tabulatorInstance.getRowsCount === 'function'
+            ? tabulatorInstance.getRowsCount()
+            : 'N/A'
+          const colCount = tabulatorInstance && typeof tabulatorInstance.getColumns === 'function'
+            ? tabulatorInstance.getColumns().length
+            : tabulatorColumns.value.length
+          console.log('[Priority 1] Data loaded successfully via ajaxRequestFunc', {
+            rows: rowCount,
+            columns: colCount
+          })
+        }
+      })
+      .catch((error: any) => {
+        console.error('[Priority 1] Error loading data via ajaxRequestFunc:', error)
+      })
+  })
 }
 
 // Update Tabulator when data or columns change (smart watch - only update what actually changed)
@@ -714,6 +869,7 @@ watch([tabulatorData, tabulatorColumns], (newVals, oldVals) => {
       oldLength: oldData?.length,
       columnsChanged,
       changedRowCount: store.changedRowIndices.size,
+      needsFormatterRefresh: needsFormatterRefresh.value,
       sampleRow: newData?.[0]
     })
   }
@@ -723,7 +879,7 @@ watch([tabulatorData, tabulatorColumns], (newVals, oldVals) => {
   const isSingleCellChange = changedRowCount === 1 && !columnsChanged && oldData && oldData.length > 0
   
   if (isSingleCellChange) {
-    // Immediate update for single cell - no nextTick delay
+    // Immediate update for single cell
     const buildStart = import.meta.env.DEV ? performance.now() : 0
     const changedRows = Array.from(store.changedRowIndices)
     const rowsToUpdate = changedRows
@@ -733,10 +889,10 @@ watch([tabulatorData, tabulatorColumns], (newVals, oldVals) => {
     
     if (rowsToUpdate.length > 0) {
       const immediateUpdateStart = import.meta.env.DEV ? performance.now() : 0
-      safeTabulatorUpdate(
-        () => {
-          const updateDataStart = import.meta.env.DEV ? performance.now() : 0
-          tabulatorInstance.updateData(rowsToUpdate)
+      const updateDataStart = import.meta.env.DEV ? performance.now() : 0
+      
+      tabulatorInstance.updateData(rowsToUpdate)
+        .then(() => {
           const updateDataEnd = import.meta.env.DEV ? performance.now() : 0
           
           if (import.meta.env.DEV) {
@@ -750,73 +906,77 @@ watch([tabulatorData, tabulatorColumns], (newVals, oldVals) => {
               totalWatch: `${totalWatchDuration.toFixed(2)}ms`
             })
           }
-        },
-        () => {
-          tabulatorInstance.setData(newData)
-          if (import.meta.env.DEV) {
-            const fallbackEnd = performance.now()
-            const fallbackDuration = fallbackEnd - immediateUpdateStart
-            const totalWatchDuration = fallbackEnd - watchStartTime
-            console.log(`[Performance] Immediate update failed, used fallback (setData): ${fallbackDuration.toFixed(2)}ms (total watch: ${totalWatchDuration.toFixed(2)}ms)`)
-          }
-        }
-      )
-      
-      // Move formatter refresh outside safeTabulatorUpdate and use nextTick (ensures computed has updated)
-      if (needsFormatterRefresh.value) {
-        nextTick(() => {
-          const reformatStart = import.meta.env.DEV ? performance.now() : 0
-          // Reformat ALL changed rows (not just first one)
-          // For single row: reformat() is fast (<10ms)
-          // For 2 rows: reformat() on both is still faster than redraw(true) for small changes
-          let reformattedCount = 0
-          let failedCount = 0
-          for (const rowIndex of changedRows) {
-            const rowComponent = tabulatorInstance.getRow(rowIndex)
-            if (rowComponent) {
-              rowComponent.reformat()
-              reformattedCount++
-            } else {
-              failedCount++
-              if (import.meta.env.DEV) {
-                console.warn(`[Formatter] Row ${rowIndex} not found for reformat() - will use fallback`)
+          
+          // Formatter refresh after update completes
+          if (needsFormatterRefresh.value) {
+            nextTick(() => {
+              const reformatStart = import.meta.env.DEV ? performance.now() : 0
+              let reformattedCount = 0
+              let failedCount = 0
+              for (const rowIndex of changedRows) {
+                const rowComponent = tabulatorInstance.getRow(rowIndex)
+                if (rowComponent) {
+                  rowComponent.reformat()
+                  reformattedCount++
+                } else {
+                  failedCount++
+                  if (import.meta.env.DEV) {
+                    console.warn(`[Formatter] Row ${rowIndex} not found for reformat() - will use fallback`)
+                  }
+                }
               }
-            }
+              if (failedCount > 0) {
+                if (import.meta.env.DEV) {
+                  console.warn(`[Formatter] ${failedCount} row(s) failed to reformat, using redraw(true) fallback`)
+                }
+                // Fallback: use redraw(true) if reformat() fails (will reset scroll, but better than nothing)
+                tabulatorInstance.redraw(true)
+              }
+              const reformatDuration = import.meta.env.DEV ? performance.now() - reformatStart : 0
+              if (import.meta.env.DEV && reformattedCount > 0) {
+                console.log(`[Formatter] Reformatted ${reformattedCount} row(s) in ${reformatDuration.toFixed(2)}ms`)
+              }
+              needsFormatterRefresh.value = false
+            })
           }
-          // If any rows failed to reformat, use redraw(true) as fallback
-          if (failedCount > 0) {
-            if (import.meta.env.DEV) {
-              console.warn(`[Formatter] ${failedCount} row(s) failed to reformat, using redraw(true) fallback`)
-            }
-            tabulatorInstance.redraw(true)
-          }
-          const reformatDuration = import.meta.env.DEV ? performance.now() - reformatStart : 0
-          if (import.meta.env.DEV && reformattedCount > 0) {
-            console.log(`[Formatter] Reformatted ${reformattedCount} row(s) in ${reformatDuration.toFixed(2)}ms`)
-          }
-          needsFormatterRefresh.value = false
+          
+          store.clearChangedRows()
         })
-      }
+        .catch((error: any) => {
+          console.error('Error updating Tabulator:', error)
+          // Fallback to full update
+          tabulatorInstance.setData(newData)
+            .then(() => {
+              if (import.meta.env.DEV) {
+                const fallbackEnd = performance.now()
+                const fallbackDuration = fallbackEnd - immediateUpdateStart
+                const totalWatchDuration = fallbackEnd - watchStartTime
+                console.log(`[Performance] Immediate update failed, used fallback (setData): ${fallbackDuration.toFixed(2)}ms (total watch: ${totalWatchDuration.toFixed(2)}ms)`)
+              }
+              store.clearChangedRows()
+            })
+            .catch((fallbackError: any) => {
+              console.error('Fallback setData also failed:', fallbackError)
+              store.clearChangedRows()
+            })
+        })
       
-      store.clearChangedRows()
       return // Skip nextTick path
     }
   }
   
   // For batch operations or column changes, use nextTick
   nextTick(() => {
-    // Only update columns if they actually changed
     if (columnsChanged) {
-      // Performance measurement for column updates
       const columnUpdateStart = import.meta.env.DEV ? performance.now() : 0
       lastColumnFields.value = currentFields
       
-      // Measure individual operations to identify bottlenecks
+      // setColumns() is synchronous in Tabulator 6.3, doesn't return a promise
       const setColumnsStart = import.meta.env.DEV ? performance.now() : 0
       tabulatorInstance.setColumns(newColumns)
       const setColumnsEnd = import.meta.env.DEV ? performance.now() : 0
       
-      // Force header redraw to ensure all group headers are visible
+      // Force header redraw after columns set
       nextTick(() => {
         if (tabulatorInstance) {
           tabulatorInstance.redraw(true)
@@ -826,42 +986,70 @@ watch([tabulatorData, tabulatorColumns], (newVals, oldVals) => {
       // When columns change, must use setData (structure changed)
       const setDataStart = import.meta.env.DEV ? performance.now() : 0
       tabulatorInstance.setData(newData)
-      const setDataEnd = import.meta.env.DEV ? performance.now() : 0
-      
-      store.clearChangedRows()
-      
-      if (import.meta.env.DEV) {
-        const columnUpdateEnd = performance.now()
-        const columnUpdateDuration = columnUpdateEnd - columnUpdateStart
-        const totalWatchDuration = columnUpdateEnd - watchStartTime
-        console.log(`[Performance] Column update breakdown:`, {
-          setColumns: `${(setColumnsEnd - setColumnsStart).toFixed(2)}ms`,
-          setData: `${(setDataEnd - setDataStart).toFixed(2)}ms`,
-          total: `${columnUpdateDuration.toFixed(2)}ms`,
-          totalWatch: `${totalWatchDuration.toFixed(2)}ms`
+        .then(() => {
+          const setDataEnd = import.meta.env.DEV ? performance.now() : 0
+          store.clearChangedRows()
+          
+          // Clear filtering state after column update
+          nextTick(() => {
+            store.isFiltering = false
+          })
+          
+          if (import.meta.env.DEV) {
+            const columnUpdateEnd = performance.now()
+            const columnUpdateDuration = columnUpdateEnd - columnUpdateStart
+            const totalWatchDuration = columnUpdateEnd - watchStartTime
+            console.log(`[Performance] Column update breakdown:`, {
+              setColumns: `${(setColumnsEnd - setColumnsStart).toFixed(2)}ms`,
+              setData: `${(setDataEnd - setDataStart).toFixed(2)}ms`,
+              total: `${columnUpdateDuration.toFixed(2)}ms`,
+              totalWatch: `${totalWatchDuration.toFixed(2)}ms`
+            })
+          }
         })
-      }
+        .catch((error: any) => {
+          console.error('Error updating columns/data:', error)
+          store.clearChangedRows()
+          nextTick(() => {
+            store.isFiltering = false
+          })
+        })
     } else {
       // Columns unchanged - use incremental update when possible
-      // Explicitly handle first load
       if (!oldData || oldData.length === 0) {
-        // First load - use full update
+        // First load - use replaceData() to preserve state
         const firstLoadStart = import.meta.env.DEV ? performance.now() : 0
-        tabulatorInstance.setData(newData)
-        store.clearChangedRows()
-        if (import.meta.env.DEV) {
-          const firstLoadEnd = performance.now()
-          const firstLoadDuration = firstLoadEnd - firstLoadStart
-          const totalWatchDuration = firstLoadEnd - watchStartTime
-          console.log(`[Performance] First load (setData): ${firstLoadDuration.toFixed(2)}ms (total watch: ${totalWatchDuration.toFixed(2)}ms)`)
-        }
+        tabulatorInstance.replaceData(newData)
+          .then(() => {
+            store.clearChangedRows()
+            
+            // Clear filtering state after first load completes
+            nextTick(() => {
+              store.isFiltering = false
+            })
+            
+            if (import.meta.env.DEV) {
+              const firstLoadEnd = performance.now()
+              const firstLoadDuration = firstLoadEnd - firstLoadStart
+              const totalWatchDuration = firstLoadEnd - watchStartTime
+              console.log(`[Performance] First load (replaceData): ${firstLoadDuration.toFixed(2)}ms (total watch: ${totalWatchDuration.toFixed(2)}ms)`)
+            }
+          })
+          .catch((error: any) => {
+            console.error('Error loading data:', error)
+            store.clearChangedRows()
+            nextTick(() => {
+              store.isFiltering = false
+            })
+          })
       } else {
         // Existing data - use incremental update if applicable
         const changedRows = Array.from(store.changedRowIndices)
         
-        // If no rows changed, skip update entirely (tabulatorData may recalculate even when nothing changed)
+        // Skip update if no rows changed (tabulatorData may recalculate even when nothing changed)
         if (changedRows.length === 0) {
-          // No changes - skip update entirely
+          // Clear filtering state when no changes detected
+          store.isFiltering = false
           if (import.meta.env.DEV) {
             console.log(`[Performance] Watch triggered but no changes - skipping update`)
           }
@@ -869,88 +1057,169 @@ watch([tabulatorData, tabulatorColumns], (newVals, oldVals) => {
         }
         
         if (changedRows.length > 0 && changedRows.length < newData.length * 0.5) {
-          // Update only changed rows (if less than 50% of rows changed)
+          // Update only changed rows (if < 50% of rows changed)
           const rowsToUpdate = changedRows
             .map(rowIndex => buildSingleRowData(rowIndex))
             .filter(row => row !== null)
           if (rowsToUpdate.length > 0) {
-            // Performance measurement for incremental updates
             const incrementalUpdateStart = import.meta.env.DEV ? performance.now() : 0
-            safeTabulatorUpdate(
-              () => {
-                tabulatorInstance.updateData(rowsToUpdate)
-              },
-              () => {
-                tabulatorInstance.setData(newData) // Fallback to full update
-              }
-            )
-            
-            // Move formatter refresh outside safeTabulatorUpdate and use nextTick (ensures computed has updated)
             let reformatDuration = 0
-            if (needsFormatterRefresh.value) {
-              nextTick(() => {
-                const reformatStart = import.meta.env.DEV ? performance.now() : 0
-                // For incremental updates (3+ rows), use redraw(true) - faster than multiple reformat() calls
-                tabulatorInstance.redraw(true)
-                reformatDuration = import.meta.env.DEV ? performance.now() - reformatStart : 0
-                if (import.meta.env.DEV) {
-                  console.log(`[Formatter] Redraw (incremental update) in ${reformatDuration.toFixed(2)}ms`)
-                }
-                needsFormatterRefresh.value = false
-              })
+            
+            // Block redraw for bulk operations (multiple rows)
+            const isBulkUpdate = rowsToUpdate.length > 1
+            if (isBulkUpdate) {
+              tabulatorInstance.blockRedraw()
             }
             
-            // Performance measurement
-            if (import.meta.env.DEV) {
-              const incrementalUpdateEnd = performance.now()
-              const incrementalDuration = incrementalUpdateEnd - incrementalUpdateStart
-              const totalWatchDuration = incrementalUpdateEnd - watchStartTime
-              console.log(`[Performance] Incremental update (${rowsToUpdate.length} rows): ${incrementalDuration.toFixed(2)}ms (reformat: ${reformatDuration.toFixed(2)}ms, total watch: ${totalWatchDuration.toFixed(2)}ms)`)
-            }
+            tabulatorInstance.updateData(rowsToUpdate)
+              .then(() => {
+                // Restore redraw FIRST (triggers automatic redraw if needed)
+                // CRITICAL: Must restore before calling redraw(true) for formatter refresh
+                if (isBulkUpdate) {
+                  tabulatorInstance.restoreRedraw()
+                }
+                
+                // Formatter refresh after redraw is restored
+                if (needsFormatterRefresh.value) {
+                  nextTick(() => {
+                    const reformatStart = import.meta.env.DEV ? performance.now() : 0
+                    // Use reformat() on each row to refresh formatters while preserving scroll position
+                    // reformat() preserves both horizontal and vertical scroll, unlike redraw() or refreshData()
+                    let reformattedCount = 0
+                    let failedCount = 0
+                    for (const row of rowsToUpdate) {
+                      const rowComponent = tabulatorInstance.getRow(row.rowIndex)
+                      if (rowComponent) {
+                        rowComponent.reformat()
+                        reformattedCount++
+                      } else {
+                        failedCount++
+                        if (import.meta.env.DEV) {
+                          console.warn(`[Formatter] Row ${row.rowIndex} not found for reformat()`)
+                        }
+                      }
+                    }
+                    
+                    // Fallback to redraw(true) only if all rows failed
+                    if (failedCount === rowsToUpdate.length) {
+                      if (import.meta.env.DEV) {
+                        console.warn(`[Formatter] All rows failed to reformat, using redraw(true) fallback`)
+                      }
+                      tabulatorInstance.redraw(true)
+                    }
+                    
+                    reformatDuration = import.meta.env.DEV ? performance.now() - reformatStart : 0
+                    if (import.meta.env.DEV) {
+                      console.log(`[Formatter] Reformatted ${reformattedCount} row(s) in ${reformatDuration.toFixed(2)}ms`)
+                    }
+                    needsFormatterRefresh.value = false
+                  })
+                }
+                
+                if (import.meta.env.DEV) {
+                  const incrementalUpdateEnd = performance.now()
+                  const incrementalDuration = incrementalUpdateEnd - incrementalUpdateStart
+                  const totalWatchDuration = incrementalUpdateEnd - watchStartTime
+                  console.log(`[Performance] Incremental update (${rowsToUpdate.length} rows): ${incrementalDuration.toFixed(2)}ms (reformat: ${reformatDuration.toFixed(2)}ms, total watch: ${totalWatchDuration.toFixed(2)}ms)`)
+                }
+                
+                store.clearChangedRows()
+              })
+              .catch((error: any) => {
+                console.error('Error updating data:', error)
+                
+                // Restore redraw before fallback
+                if (isBulkUpdate) {
+                  tabulatorInstance.restoreRedraw()
+                }
+                
+                // Fallback to full update with replaceData() to preserve state
+                tabulatorInstance.replaceData(newData)
+                  .then(() => {
+                    store.clearChangedRows()
+                  })
+                  .catch((fallbackError: any) => {
+                    console.error('Fallback replaceData also failed:', fallbackError)
+                    store.clearChangedRows()
+                  })
+              })
+          } else {
+            store.clearChangedRows()
           }
-          store.clearChangedRows()
         } else {
-          // Too many rows changed - use full update
-          // Performance measurement for full updates
+          // Too many rows changed - use full update with replaceData() to preserve state
           const fullUpdateStart = import.meta.env.DEV ? performance.now() : 0
-          tabulatorInstance.setData(newData)
-          
-          // For full updates, always use redraw(true) (reformat() on many rows is slow)
           let reformatDuration = 0
-          if (needsFormatterRefresh.value) {
-            // Use nextTick to ensure computed properties have updated before formatter runs
-            nextTick(() => {
-              const reformatStart = import.meta.env.DEV ? performance.now() : 0
-              // For full updates, always use redraw(true) - faster than calling reformat() on many rows
-              tabulatorInstance.redraw(true)
-              reformatDuration = import.meta.env.DEV ? performance.now() - reformatStart : 0
-              if (import.meta.env.DEV) {
-                console.log(`[Formatter] Redraw (full update) in ${reformatDuration.toFixed(2)}ms`)
-              }
-              needsFormatterRefresh.value = false
-            })
-          }
           
-          store.clearChangedRows()
-          if (import.meta.env.DEV) {
-            const fullUpdateEnd = performance.now()
-            const fullUpdateDuration = fullUpdateEnd - fullUpdateStart
-            const totalWatchDuration = fullUpdateEnd - watchStartTime
-            console.log(`[Performance] Full update (setData, ${changedRows.length} changed rows): ${fullUpdateDuration.toFixed(2)}ms (reformat: ${reformatDuration.toFixed(2)}ms, total watch: ${totalWatchDuration.toFixed(2)}ms)`)
-          }
+          tabulatorInstance.replaceData(newData)
+            .then(() => {
+              // For full updates, use reformat() on changed rows to preserve scroll position
+              if (needsFormatterRefresh.value) {
+                nextTick(() => {
+                  const reformatStart = import.meta.env.DEV ? performance.now() : 0
+                  // Use reformat() on changed rows to refresh formatters while preserving scroll position
+                  // reformat() preserves both horizontal and vertical scroll, unlike redraw() or refreshData()
+                  const changedRows = Array.from(store.changedRowIndices)
+                  let reformattedCount = 0
+                  let failedCount = 0
+                  
+                  for (const rowIndex of changedRows) {
+                    const rowComponent = tabulatorInstance.getRow(rowIndex)
+                    if (rowComponent) {
+                      rowComponent.reformat()
+                      reformattedCount++
+                    } else {
+                      failedCount++
+                    }
+                  }
+                  
+                  // Fallback to redraw(true) only if all rows failed
+                  if (failedCount === changedRows.length && changedRows.length > 0) {
+                    if (import.meta.env.DEV) {
+                      console.warn(`[Formatter] All rows failed to reformat, using redraw(true) fallback`)
+                    }
+                    tabulatorInstance.redraw(true)
+                  }
+                  
+                  reformatDuration = import.meta.env.DEV ? performance.now() - reformatStart : 0
+                  if (import.meta.env.DEV) {
+                    console.log(`[Formatter] Reformatted ${reformattedCount} row(s) in ${reformatDuration.toFixed(2)}ms`)
+                  }
+                  needsFormatterRefresh.value = false
+                })
+              }
+              
+              store.clearChangedRows()
+              
+              // Clear filtering state after full update
+              nextTick(() => {
+                store.isFiltering = false
+              })
+              
+              if (import.meta.env.DEV) {
+                const fullUpdateEnd = performance.now()
+                const fullUpdateDuration = fullUpdateEnd - fullUpdateStart
+                const totalWatchDuration = fullUpdateEnd - watchStartTime
+                console.log(`[Performance] Full update (replaceData, ${changedRows.length} changed rows): ${fullUpdateDuration.toFixed(2)}ms (reformat: ${reformatDuration.toFixed(2)}ms, total watch: ${totalWatchDuration.toFixed(2)}ms)`)
+              }
+            })
+            .catch((error: any) => {
+              console.error('Error updating data:', error)
+              store.clearChangedRows()
+              nextTick(() => {
+                store.isFiltering = false
+              })
+            })
         }
       }
     }
   })
 })
 
-/**
- * Set grid height to fill container
- */
+// Set grid height to fill container
 function setGridHeight() {
   if (!gridWrapperRef.value || !gridContainerRef.value || !tabulatorInstance) return
   
-  // Check if Tabulator is fully initialized (has rendered)
   try {
     const filtersEl = gridWrapperRef.value.parentElement?.querySelector('.filters') as HTMLElement
     const filtersHeight = filtersEl ? filtersEl.offsetHeight : 60
@@ -975,15 +1244,12 @@ function setGridHeight() {
   }
 }
 
-// Check if a result cell is marked as final (uses rowMap and cellMap for O(1) lookups)
+// Check if result cell is marked as final (uses rowMap and cellMap for O(1) lookups)
 function isCellFinal(rowIndex: number, columnIndex: number): boolean {
   if (!store.data) return false
   
-  // Use rowMap for O(1) row lookup
   const row = store.rowMap.get(rowIndex)
   if (!row) return false
-  
-  // Use cellMap for O(1) cell lookup
   const rowCellMap = store.cellMap.get(rowIndex)
   const cell = rowCellMap?.get(columnIndex)
   return cell?.isFinal === true
@@ -1075,11 +1341,9 @@ function extractSelectedResultRows(selectedRanges: any[], clickedColumn: ColumnD
   return resultRows
 }
 
-// Action handlers (both column-level and cell-level) are now provided by useGridActions composable (see initialization above)
+// Action handlers provided by useGridActions composable
 
-/**
- * Open request modal for repeat or overlimit requests
- */
+// Open request modal for repeat or overlimit requests
 function openRequestModal(
   requestType: 'repeat' | 'overlimit',
   selectedRows: Array<{rowIndex: number, rowData: RowData, serviceItemIndex: number}>,
@@ -1092,14 +1356,11 @@ function openRequestModal(
   
   requestModalType.value = requestType
   requestModalRows.value = selectedRows
-  // Use the service item index from the clicked column
   requestModalServiceItemIndex.value = clickedColumn.serviceItemIndex
   showRequestModal.value = true
 }
 
-/**
- * Close request modal
- */
+// Close request modal
 function closeRequestModal() {
   showRequestModal.value = false
   requestModalType.value = null
@@ -1131,9 +1392,9 @@ watch(() => store.filterChangeCounter, () => {
       timestamp: new Date().toISOString()
     })
   }
-}, { flush: 'sync' }) // Run synchronously, before any computed properties
+}, { flush: 'sync' })
 
-// Watch selectedServiceItemIndex to clear row cache when row filter changes
+// Watch selectedServiceItemIndex to clear row cache when filter changes
 watch(() => store.selectedServiceItemIndex, () => {
   // Row filter changed - clear row cache
   rowCache.clear()
@@ -1148,24 +1409,12 @@ watch(() => store.selectedServiceItemIndex, () => {
 }, { flush: 'sync' }) // Run synchronously
 
 onMounted(() => {
-  // Wait for data to load
-  if (store.data) {
-    nextTick(() => {
-      initializeTabulator()
-      setGridHeight()
-    })
-  } else {
-    // Watch for data to load
-    const unwatch = watch(() => store.data, (newData) => {
-      if (newData) {
-        nextTick(() => {
-          initializeTabulator()
-          setGridHeight()
-          unwatch()
-        })
-      }
-    })
-  }
+  // Always initialize immediately - ajaxRequestFunc will handle data loading
+  // REASONING: We always use ajaxRequestFunc now, which works with or without pre-loaded data
+  nextTick(() => {
+    initializeTabulator()
+    setGridHeight()
+  })
   
   // Handle window resize
   window.addEventListener('resize', setGridHeight)
@@ -1181,10 +1430,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* Wrapper styles migrated to Tailwind classes */
-/* Tabulator :deep() styles remain as CSS - they target third-party library DOM structure */
-
-/* Modern Tabulator Grid Styling */
+/* Tabulator :deep() styles remain as CSS - target third-party library DOM structure */
 :deep(.tabulator) {
   background: #ffffff;
   border: none;

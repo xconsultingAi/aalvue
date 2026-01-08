@@ -60,12 +60,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
 import { TabulatorFull as Tabulator } from 'tabulator-tables'
 import type { RowData } from '@/types'
 import { useDataTableStore } from '@/stores/dataTableStore'
 import { useLoadingStore } from '@/stores/loadingStore'
 import { showToast } from '@/stores/toastStore'
+import { createApiClient } from '@/utils/apiClient'
 
 interface RequestRow {
   id: string
@@ -115,7 +116,6 @@ const modalTitle = computed(() => {
 function initializeRequestRows() {
   requestRows.value = props.selectedRows.map((item, index) => {
     const row = item.rowData
-    // Try to get sampleId from row data
     const sampleId = (row as any).sampleId || (row as any).sampleID || row.travelerNo || ''
     
     return {
@@ -126,18 +126,17 @@ function initializeRequestRows() {
       materialType: row.materialType,
       controlType: row.controlType,
       sampleId: sampleId,
-      position: index + 1, // Calculate based on order (1-based)
+      position: index + 1, // 1-based
       isDuplicate: false
     }
   })
 }
 
-// Validate position values (unique and numeric)
+// Validate positions are unique and numeric
 const isValid = computed(() => {
   const positions = requestRows.value.map(r => r.position)
   const uniquePositions = new Set(positions)
   
-  // Check if all positions are numeric and unique
   return positions.every(p => typeof p === 'number' && !isNaN(p) && p > 0) &&
          uniquePositions.size === positions.length
 })
@@ -181,11 +180,10 @@ function initializeTabulator() {
         title: 'Position',
         field: 'position',
         width: 100,
-        editor: false, // Read-only - automatically calculated from row order
+        editor: false, // Read-only, calculated from row order
         headerSort: false,
         hozAlign: 'center',
         formatter: (cell: any) => {
-          // Position calculated from row order
           const value = cell.getValue()
           return `<div style="text-align: center;">${value || ''}</div>`
         }
@@ -249,24 +247,20 @@ function initializeTabulator() {
   })
 }
 
-// Update positions based on row order (calculated as row index + 1)
+// Update positions from row order (row index + 1)
 function updatePositionsFromOrder() {
   if (!tabulatorInstance) return
   
-  // Get rows in current order
   const rows = tabulatorInstance.getRows()
   
   if (import.meta.env.DEV) {
     console.log('updatePositionsFromOrder: Processing', rows.length, 'rows')
   }
   
-  // Update positions based on current row order
   rows.forEach((row, index) => {
     const rowData = row.getData() as RequestRow
-    const newPosition = index + 1 // Automatically calculate based on row order (1-based)
+    const newPosition = index + 1 // 1-based
     
-    // Always update position to match row order
-    // Update in requestRows array first
     const rowInArray = requestRows.value.find(r => r.id === rowData.id)
     if (rowInArray) {
       rowInArray.position = newPosition
@@ -275,7 +269,6 @@ function updatePositionsFromOrder() {
       }
     }
     
-    // Update Tabulator cell to reflect new position
     try {
       row.updateCell('position', newPosition)
     } catch (error) {
@@ -285,7 +278,6 @@ function updatePositionsFromOrder() {
     }
   })
   
-  // Force redraw to ensure UI updates
   tabulatorInstance.redraw(true)
 }
 
@@ -304,7 +296,6 @@ function duplicateRow(rowId: string) {
     isDuplicate: true
   }
   
-  // Add to array
   const rowIndex = requestRows.value.findIndex(r => r.id === rowId)
   if (rowIndex !== -1) {
     requestRows.value.splice(rowIndex + 1, 0, duplicate)
@@ -312,9 +303,7 @@ function duplicateRow(rowId: string) {
     requestRows.value.push(duplicate)
   }
   
-  // Add to Tabulator and update positions
   tabulatorInstance.addRow(duplicate, false)
-  // Update positions after adding
   setTimeout(() => {
     updatePositionsFromOrder()
   }, 50)
@@ -356,21 +345,22 @@ async function handleSubmit() {
       }))
     }
     
-    // Construct API endpoint
     const endpoint = props.apiEndpoint.endsWith('/') 
       ? `${props.apiEndpoint}requests` 
       : `${props.apiEndpoint}/requests`
     
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestData)
-    })
+    const apiClient = createApiClient({ csrfToken: csrfToken || undefined })
+    const response = await apiClient.post(endpoint, requestData)
     
     if (!response.ok) {
-      throw new Error(`API error: ${response.status} ${response.statusText}`)
+      if (response.status === 401) {
+        throw new Error('Authentication required. Please log in.')
+      } else if (response.status === 403) {
+        throw new Error('Access denied. You do not have permission to submit this request.')
+      } else {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || `API error: ${response.status} ${response.statusText}`)
+      }
     }
     
     const result = await response.json()
@@ -415,8 +405,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* All styles migrated to Tailwind classes */
-/* Browser default overrides for select dropdown arrow */
+/* Browser default overrides for select dropdown */
 select {
   appearance: none;
   -webkit-appearance: none;

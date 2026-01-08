@@ -6,7 +6,8 @@ import path from 'node:path'
 export default defineConfig({
   plugins: [vue()],
   define: {
-    'process.env.NODE_ENV': JSON.stringify('production')
+    'process.env.NODE_ENV': JSON.stringify('production'),
+    'process': JSON.stringify({ env: { NODE_ENV: 'production' } })
   },
   resolve: {
     alias: {

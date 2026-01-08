@@ -8,8 +8,8 @@ import './styles/tailwind.css'
 import './styles/shared.css'
 
 const DataArrayVue = {
-  mount(selector: string, options?: { initialData?: any; apiEndpoint?: string }) {
-    console.log('DataArrayVue.mount called:', { selector, hasInitialData: !!options?.initialData, hasApiEndpoint: !!options?.apiEndpoint })
+  mount(selector: string, options?: { initialData?: any; apiEndpoint?: string; csrfToken?: string }) {
+    console.log('DataArrayVue.mount called:', { selector, hasInitialData: !!options?.initialData, hasApiEndpoint: !!options?.apiEndpoint, hasCsrfToken: !!options?.csrfToken })
     
     const el = document.querySelector(selector)
     if (!el) {
@@ -20,7 +20,8 @@ const DataArrayVue = {
     console.log('Element found, creating Vue app...')
     const app = createApp(App, {
       initialData: options?.initialData,
-      apiEndpoint: options?.apiEndpoint
+      apiEndpoint: options?.apiEndpoint,
+      csrfToken: options?.csrfToken
     })
     app.use(createPinia())
     app.use(Toast, {

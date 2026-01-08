@@ -1,14 +1,11 @@
-// Chunked Processing Utility
-// Extracts repeated pattern of processing items in chunks with progress updates to keep UI responsive
-
-// Process items in chunks with progress updates (yields to browser periodically to keep UI responsive)
+// Process items in chunks with progress updates
 export async function processInChunks<T>(
   items: T[],
   processor: (item: T, index: number) => void | Promise<void>,
   options: {
     chunkSize?: number
     onProgress?: (current: number, total: number) => void
-    progressUpdateInterval?: number // Update progress every N items (default: 10)
+    progressUpdateInterval?: number
   } = {}
 ): Promise<void> {
   const {
@@ -44,7 +41,7 @@ export async function processInChunks<T>(
   }
 }
 
-// Process items in chunks and collect results (variant that collects results from processing)
+// Process items in chunks and collect results
 export async function processInChunksWithResults<T, R>(
   items: T[],
   processor: (item: T, index: number) => R | Promise<R>,

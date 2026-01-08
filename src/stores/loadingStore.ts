@@ -9,7 +9,6 @@ export const useLoadingStore = defineStore('loading', () => {
   let hideTimeout: ReturnType<typeof setTimeout> | null = null
 
   function show(msg: string) {
-    // Clear any pending hide timeout
     if (hideTimeout) {
       clearTimeout(hideTimeout)
       hideTimeout = null
@@ -26,7 +25,6 @@ export const useLoadingStore = defineStore('loading', () => {
   }
 
   function hide() {
-    // Ensure overlay is visible for at least 300ms for better UX
     const elapsed = Date.now() - showTime
     const minDisplayTime = 300
     
