@@ -16,10 +16,12 @@
 
         <!-- Body -->
         <div class="px-6 py-6 overflow-y-auto flex-1 min-h-0">
-          <a v-if="showLabel" :href="`/JobOrderServiceItem/PrintTraveler/${travelerNo}`" target="_blank"
-            class="text-sm text-blue-600 underline mb-4 inline-block">
-            Traveler
-          </a>
+          <div v-if="showLabel">
+            Traveler: <a :href="`/JobOrderServiceItem/PrintTraveler/${travelerNo}`" target="_blank"
+              class="text-sm text-blue-600 underline mb-4 inline-block">
+              {{ travelerNo }}
+            </a>
+          </div>
           <!-- Service Item Dropdown -->
           <div class="mb-5">
             <label class="block mb-2 text-sm font-medium text-gray-700">Service Item:</label>
@@ -323,6 +325,8 @@ function duplicateRow(rowId: string) {
 
 // Handle close
 function handleClose() {
+  showLabel.value = false
+  travelerNo.value = ''
   emit('close')
 }
 
@@ -337,7 +341,6 @@ async function handleSubmit() {
   loadingStore.show('Submitting request...')
 
   try {
-    debugger
     const requestData = {
       data: requestRows.value.map(row => ({
         job_code: props.jobCode || '',
@@ -370,7 +373,7 @@ async function handleSubmit() {
     loadingStore.hide()
     showToast('success', `${props.requestType === 'repeat' ? 'Repeat' : 'Overlimit'} request submitted successfully`)
     showLabel.value = true
-    travelerNo.value = result.data[0].Column1 || ''
+    travelerNo.value = result.data[0].traveller_code || ''
   } catch (error: any) {
     loadingStore.hide()
     showToast('error', `Failed to submit request: ${error.message || 'Unknown error'}`)
