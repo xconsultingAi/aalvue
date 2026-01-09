@@ -20,6 +20,7 @@
       :selected-service-item-index="requestModalServiceItemIndex"
       :api-endpoint="apiEndpoint"
       @close="closeRequestModal"
+      :job-code="store.data?.metadata.job.code || ''"
     />
   </div>
 </template>
